@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.10", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Syntax check
+      run: |
+        python -m py_compile echomind/engine.py   && echo "✅ engine.py"
+        python -m py_compile echomind/reporter.py && echo "✅ reporter.py"
+        python -m py_compile echomind/cli.py      && echo "✅ cli.py"
+
+    - name: Verify zero runtime dependencies
+      run: |
+        python -c "
+        import ast
+        stdlib = {'re','json','time','math','random','hashlib','threading',
+                  'datetime','dataclasses','typing','pathlib','enum',
+                  'urllib','http','os','sys','argparse','shutil','textwrap',
+                  'collections','contextlib','io','traceback','copy'}
+        for fname in ['echomind/engine.py','echomind/reporter.py','echomind/cli.py']:
+            with open(fname) as f:
+                tree = ast.parse(f.read())
+            imports = [n.names[0].name.split('.')[0] for n in ast.walk(tree)
+                       if isinstance(n, ast.Import)]
+            imports += [n.module.split('.')[0] for n in ast.walk(tree)
+                        if isinstance(n, ast.ImportFrom) and n.module
+                        and not n.module.startswith('echomind')]
+            third = [i for i in imports if i not in stdlib and i != '__future__']
+            assert not third, f'{fname}: unexpected imports: {third}'
+        print('✅ Zero runtime dependencies confirmed')
+        "
+
+    - name: Run tests
+      run: python tests/test_echomind.py
+
+    - name: Smoke — import + list personas
+      run: |
+        python -c "import echomind; print('version:', echomind.__version__)"
+        python -m echomind --list-personas > /dev/null && echo "✅ list-personas OK"
+
+    - name: Smoke — all 8 personas present
+      run: |
+        python -c "
+        from echomind.engine import get_persona_library
+        lib = get_persona_library()
+        required = ['pragmatist','idealist','systems','devil',
+                    'risk','historian','builder','ethicist']
+        for pid in required:
+            assert pid in lib, f'Missing: {pid}'
+        print(f'✅ All {len(lib)} personas present')
+        "
+
+    - name: Smoke — JSON reporter works
+      run: |
+        python -c "
+        from echomind.engine import DebateState, get_persona_library, DebatePhase
+        from echomind.reporter import JsonReporter
+        import json
+        lib = get_persona_library()
+        s = DebateState(topic='Test', personas=[lib['pragmatist'], lib['idealist']])
+        s.synthesis = 'CONSENSUS: Test. FAULT LINES: None. VERDICT: OK.'
+        out = JsonReporter().render(s)
+        data = json.loads(out)
+        assert data['topic'] == 'Test'
+        print('✅ JSON reporter OK')
+        "
+
+    - name: Smoke — Markdown reporter works
+      run: |
+        python -c "
+        from echomind.engine import DebateState, get_persona_library
+        from echomind.reporter import MarkdownReporter
+        lib = get_persona_library()
+        s = DebateState(topic='Test topic', personas=[lib['pragmatist'], lib['devil']])
+        md = MarkdownReporter().render(s)
+        assert 'EchoMind' in md
+        print('✅ Markdown reporter OK')
+        "
